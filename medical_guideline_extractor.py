@@ -1,28 +1,33 @@
 from __future__ import annotations
 
 
-from openai import OpenAI
+import asyncio
+import time
+
+from openai import AsyncOpenAI, OpenAI
 
 from medical_guideline import MedicalGuideline
-
-import time
 
 
 _SYSTEM_PROMPT = "You are a medical guideline extractor. Output ONLY JSON that fits the MedicalGuideline Pydantic model."
 
 
 class MedicalGuidelineExtractor:
-    """Wrapper around OpenAI responses.parse for guidelines."""
+    """Async extractor using `AsyncOpenAI.responses.parse`."""
 
     def __init__(
-        self, client: OpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
-    ):
-        self.client = client or OpenAI()
+        self,
+        client: AsyncOpenAI | None = None,
+        system_prompt: str = _SYSTEM_PROMPT,
+    ) -> None:
+        self.client = client or AsyncOpenAI()
         self.system_prompt = system_prompt
 
-    def extract(self, text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
+    async def extract_async(
+        self, text: str, model: str = "gpt-4o-mini"
+    ) -> MedicalGuideline:
         start = time.perf_counter()
-        resp = self.client.responses.parse(
+        resp = await self.client.responses.parse(
             model=model,
             input=[
                 {"role": "system", "content": self.system_prompt},
@@ -31,16 +36,21 @@ class MedicalGuidelineExtractor:
             text_format=MedicalGuideline,
         )
 
-        print(f"[MedicalGuidelineExtractor] elapsed: {time.perf_counter()-start:.2f}s")
+        print(
+            f"[MedicalGuidelineExtractor] elapsed: {time.perf_counter() - start:.2f}s"
+        )
         return resp.output_parsed
+
+    def extract(self, text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
+        """Sync helper around `extract_async`."""
+
+        return asyncio.run(self.extract_async(text, model=model))
 
 
 _DEFAULT_EXTRACTOR = MedicalGuidelineExtractor()
 
 
 def extract_guideline(text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
-    """Convenience wrapper around a module-level `MedicalGuidelineExtractor`."""
-
     return _DEFAULT_EXTRACTOR.extract(text, model=model)
 
 

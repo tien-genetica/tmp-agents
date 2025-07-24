@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 import time
+import asyncio
 
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 from patient_profile import PatientProfile
 
@@ -18,14 +19,16 @@ class PatientProfileExtractor:
     """Callable extractor object wrapping OpenAI responses.parse."""
 
     def __init__(
-        self, client: OpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
+        self, client: AsyncOpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
     ):
-        self.client = client or OpenAI()
+        self.client = client or AsyncOpenAI()
         self.system_prompt = system_prompt
 
-    def extract(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile:
+    async def extract_async(
+        self, text: str, model: str = "gpt-4o-mini"
+    ) -> PatientProfile:
         start = time.perf_counter()
-        resp = self.client.responses.parse(
+        resp = await self.client.responses.parse(
             model=model,
             input=[
                 {"role": "system", "content": self.system_prompt},
@@ -36,6 +39,11 @@ class PatientProfileExtractor:
 
         print(f"[PatientProfileExtractor] elapsed: {time.perf_counter() - start:.2f}s")
         return resp.output_parsed
+
+    def extract(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile:
+        """Sync wrapper around `extract_async`."""
+
+        return asyncio.run(self.extract_async(text, model=model))
 
 
 # Default singleton for convenience
