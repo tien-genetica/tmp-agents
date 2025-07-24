@@ -5,31 +5,43 @@ from openai import OpenAI
 
 from medical_guideline import MedicalGuideline
 
-client = OpenAI()
+import time
 
-_SYSTEM_PROMPT = (
-    "You are a clinical guideline extraction assistant.\n\n"
-    "TASK: Read the user's text and produce a JSON object that can be parsed into the `MedicalGuideline` Pydantic model.\n\n"
-    "INCLUDE only these keys: id, title, description?, category (international|vietnamese|other), source, url?, effectiveDate?, version?, tags?, language?, labTests?\n"
-    "• For labTests include: code, name, internationalRanges, vietnameseRanges.\n"
-    "• Each reference range object needs: lower?, upper?, unit, ageMin?, ageMax?, sex?.\n"
-    "• Omit any field you cannot infer. Use ISO-8601 for dates (YYYY-MM-DD)."
-)
+
+_SYSTEM_PROMPT = "You are a medical guideline extractor. Output ONLY JSON that fits the MedicalGuideline Pydantic model."
+
+
+class MedicalGuidelineExtractor:
+    """Wrapper around OpenAI responses.parse for guidelines."""
+
+    def __init__(
+        self, client: OpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
+    ):
+        self.client = client or OpenAI()
+        self.system_prompt = system_prompt
+
+    def extract(self, text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
+        start = time.perf_counter()
+        resp = self.client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": text},
+            ],
+            text_format=MedicalGuideline,
+        )
+
+        print(f"[MedicalGuidelineExtractor] elapsed: {time.perf_counter()-start:.2f}s")
+        return resp.output_parsed
+
+
+_DEFAULT_EXTRACTOR = MedicalGuidelineExtractor()
 
 
 def extract_guideline(text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
-    """Return a `MedicalGuideline` parsed from *text*."""
+    """Convenience wrapper around a module-level `MedicalGuidelineExtractor`."""
 
-    resp = client.responses.parse(
-        model=model,
-        input=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
-        text_format=MedicalGuideline,
-    )
-
-    return resp.output_parsed
+    return _DEFAULT_EXTRACTOR.extract(text, model=model)
 
 
 if __name__ == "__main__":
@@ -39,7 +51,7 @@ if __name__ == "__main__":
         "Lab reference: systolic blood pressure 90-120 mmHg (international)."
     )
 
-    guideline = extract_guideline(SAMPLE)
-    import json, pprint
+    import json
 
-    print(json.dumps(guideline.to_json(), indent=2)) 
+    guideline = extract_guideline(SAMPLE)
+    print(json.dumps(guideline.to_json(), indent=2))

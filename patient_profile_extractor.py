@@ -1,30 +1,51 @@
 from __future__ import annotations
 
+import time
 
 from openai import OpenAI
 
 from patient_profile import PatientProfile
 
 
-client = OpenAI()
+_SYSTEM_PROMPT = (
+    "You are a patient profile extractor. Your ONLY task is to read the user's text and output patient demographics as JSON.\n"
+    "Return raw JSON (no markdown) that can be parsed directly by the Python `PatientProfile` Pydantic model.\n"
+    "Include keys only if the information is present. Follow ISO-8601 dates."
+)
 
 
-_SYSTEM_PROMPT = """You are an information-extraction assistant. Extract only patient DEMOGRAPHICS from the user text and output JSON that can be parsed into the provided Pydantic model."""
+class PatientProfileExtractor:
+    """Callable extractor object wrapping OpenAI responses.parse."""
+
+    def __init__(
+        self, client: OpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
+    ):
+        self.client = client or OpenAI()
+        self.system_prompt = system_prompt
+
+    def extract(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile:
+        start = time.perf_counter()
+        resp = self.client.responses.parse(
+            model=model,
+            input=[
+                {"role": "system", "content": self.system_prompt},
+                {"role": "user", "content": text},
+            ],
+            text_format=PatientProfile,
+        )
+
+        print(f"[PatientProfileExtractor] elapsed: {time.perf_counter() - start:.2f}s")
+        return resp.output_parsed
+
+
+# Default singleton for convenience
+_DEFAULT_EXTRACTOR = PatientProfileExtractor()
 
 
 def extract_patient_profile(text: str, model: str = "gpt-4o-mini") -> PatientProfile:
-    """Return `PatientProfile` parsed directly via OpenAI responses.parse."""
+    """Convenience wrapper around a module-level `PatientProfileExtractor`."""
 
-    response = client.responses.parse(
-        model=model,
-        input=[
-            {"role": "system", "content": _SYSTEM_PROMPT},
-            {"role": "user", "content": text},
-        ],
-        text_format=PatientProfile,
-    )
-
-    return response.output_parsed
+    return _DEFAULT_EXTRACTOR.extract(text, model=model)
 
 
 if __name__ == "__main__":
@@ -35,5 +56,4 @@ if __name__ == "__main__":
         "I speak Spanish (preferred), French and English."
     )
 
-    profile = extract_patient_profile(SAMPLE)
-    print(profile.to_fhir())
+    print(extract_patient_profile(SAMPLE))
