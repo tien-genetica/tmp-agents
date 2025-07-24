@@ -1,132 +1,178 @@
 from __future__ import annotations
 
-from datetime import date, datetime
-from typing import List, Optional, Dict, Any
+from datetime import date
+from typing import List, Optional, Dict, Any, Literal, TypeAlias
+
 
 from pydantic import BaseModel, Field
 
+# Enumerations
+Gender: TypeAlias = Literal["male", "female", "other", "unknown"]
+MaritalStatus: TypeAlias = Literal[
+    "single",
+    "married",
+    "divorced",
+    "widowed",
+    "separated",
+    "unknown",
+]
 
-class Identifier(BaseModel):
-    system: str
-    value: str
+
+class DeceasedStatus(BaseModel):
+    """Represents patient death information."""
+
+    is_deceased: bool = False
+    date: Optional[date] = None
 
 
 class HumanName(BaseModel):
-    family: str
-    given: List[str] = Field(default_factory=list)
+    first_name: str
+    last_name: str
+    full_name: Optional[str] = None
+
+    def to_fhir_dict(self) -> Dict[str, Any]:
+        """Convert this HumanName to a FHIR-compliant dict."""
+        text_val = self.full_name or f"{self.first_name} {self.last_name}"
+        return {
+            "family": self.last_name,
+            "given": [self.first_name],
+            "text": text_val,
+        }
 
 
-class ContactPoint(BaseModel):
-    system: str  # phone | email | fax | etc.
+class Telecom(BaseModel):
+    system: Literal["phone", "fax", "email", "url", "sms", "other"]
     value: str
-    use: str  # home | work | mobile | temp | old
+    use_for: Optional[Literal["home", "work", "temp", "old", "mobile"]] = None
 
 
 class Address(BaseModel):
     line: List[str] = Field(default_factory=list)
     city: Optional[str] = None
     state: Optional[str] = None
-    postal_code: Optional[str] = Field(None, alias="postalCode")
+    postal_code: Optional[str] = None
     country: Optional[str] = None
 
-    class Config:
-        validate_by_name = True
 
-
-class Coding(BaseModel):
-    system: Optional[str] = None
-    code: Optional[str] = None
-    display: Optional[str] = None
-
-
-class CodeableConcept(BaseModel):
-    coding: List[Coding] = Field(default_factory=list)
-    text: Optional[str] = None
-
-
-class Reference(BaseModel):
+class Organization(BaseModel):
     reference: Optional[str] = None
     display: Optional[str] = None
 
 
 class Contact(BaseModel):
-    relationship: List[CodeableConcept] = Field(default_factory=list)
+    relationship: List[str] = Field(default_factory=list)
     name: Optional[HumanName] = None
-    telecom: List[ContactPoint] = Field(default_factory=list)
-    address: Optional[Address] = None
-    gender: Optional[str] = None
-    organization: Optional[Reference] = None
+    telecoms: List[Telecom] = Field(default_factory=list)
+    addresses: List[Address] = Field(default_factory=list)
+    gender: Optional[Gender] = None
+    organizations: List[Organization] = Field(default_factory=list)
 
 
-class PatientCommunication(BaseModel):
-    language: CodeableConcept
+class Language(BaseModel):
+    language: str
     preferred: Optional[bool] = None
 
 
-# Patient resource (FHIR)
-
-
 class PatientProfile(BaseModel):
-    # Basic
     id: str
-    identifier: List[Identifier] = Field(default_factory=list)
-    active: bool = True
-
-    # Demographics
-    name: List[HumanName] = Field(default_factory=list)
-    telecom: List[ContactPoint] = Field(default_factory=list)
-    gender: Optional[str] = None  # male | female | other | unknown
-    birth_date: Optional[date] = Field(None, alias="birthDate")
-    deceased_boolean: Optional[bool] = Field(None, alias="deceasedBoolean")
-    deceased_date: Optional[date] = Field(None, alias="deceasedDate")
-
-    # Socio-economic
-    address: List[Address] = Field(default_factory=list)
-    marital_status: Optional[str] = Field(None, alias="maritalStatus")
-    language: Optional[str] = None
-
-    # Relationships
-    contact: List[Contact] = Field(default_factory=list)
-    communication: List[PatientCommunication] = Field(default_factory=list)
-    managing_organization: Optional[Reference] = Field(
-        None, alias="managingOrganization"
-    )
-    general_practitioner: List[Reference] = Field(
-        default_factory=list, alias="generalPractitioner"
-    )
-
-    # Embedded medical record
-    encounters: List["Encounter"] = Field(default_factory=list)
-    conditions: List["Condition"] = Field(default_factory=list)
-    observations: List["Observation"] = Field(default_factory=list)
-    medication_requests: List["MedicationRequest"] = Field(
-        default_factory=list, alias="medicationRequests"
-    )
-
-    class Config:
-        validate_by_name = True
-        str_strip_whitespace = True
-        validate_assignment = True
-        frozen = True  # make instances hashable & immutable (optional)
-
-    # ------------------------------------------------------------------
-    # Helpers for FHIR compliant import/export
-    # ------------------------------------------------------------------
+    name: HumanName
+    other_names: List[HumanName] = Field(default_factory=list)
+    telecoms: List[Telecom] = Field(default_factory=list)
+    gender: Optional[Gender] = None
+    birth_date: Optional[date] = None
+    addresses: List[Address] = Field(default_factory=list)
+    deceased: DeceasedStatus = Field(default_factory=DeceasedStatus)
+    marital_status: Optional[MaritalStatus] = None
+    contacts: List[Contact] = Field(default_factory=list)
+    languages: List[Language] = Field(default_factory=list)
+    managing_organization: Optional[Organization] = None
+    medical_records: List["MedicalRecord"] = Field(default_factory=list)
 
     def to_fhir(self) -> Dict[str, Any]:
         """Serialize the model to a FHIR-compliant JSON dict."""
-        payload = self.model_dump(
-            by_alias=True,
-            exclude_none=True,
-            mode="json",
-            exclude={
-                "encounters",
-                "conditions",
-                "observations",
-                "medication_requests",
-            },
-        )
+        # Base demographic payload excluding complex lists
+        payload: Dict[str, Any] = {}
+
+        # Identifiers
+        payload["id"] = self.id
+
+        # Names
+        names_list = [self.name.to_fhir_dict()] + [
+            n.to_fhir_dict() for n in self.other_names
+        ]
+        payload["name"] = names_list
+
+        # Telecoms
+        if self.telecoms:
+            payload["telecom"] = [t.__dict__ for t in self.telecoms]
+
+        # Gender / birth / marital
+        if self.gender:
+            payload["gender"] = self.gender
+        if self.birth_date:
+            payload["birthDate"] = self.birth_date.isoformat()
+        if self.marital_status:
+            payload["maritalStatus"] = {
+                "coding": [{"code": self.marital_status}],
+                "text": self.marital_status,
+            }
+
+        # Addresses
+        if self.addresses:
+            payload["address"] = [
+                a.model_dump(exclude_none=True, mode="json") for a in self.addresses
+            ]
+
+        # Languages
+        if self.languages:
+            payload["communication"] = [
+                {"language": {"text": l.language}, "preferred": l.preferred}
+                for l in self.languages
+            ]
+
+        # Managing organization
+        if self.managing_organization:
+            payload["managingOrganization"] = self.managing_organization.model_dump(
+                exclude_none=True, mode="json"
+            )
+
+        # Contacts
+        if self.contacts:
+            payload["contact"] = [
+                {
+                    "relationship": c.relationship,
+                    "name": c.name.to_fhir_dict() if c.name else None,
+                    "telecom": [t.__dict__ for t in c.telecoms] if c.telecoms else None,
+                    "address": (
+                        [
+                            a.model_dump(exclude_none=True, mode="json")
+                            for a in c.addresses
+                        ]
+                        if c.addresses
+                        else None
+                    ),
+                    "gender": c.gender,
+                    "organization": (
+                        [
+                            o.model_dump(exclude_none=True, mode="json")
+                            for o in c.organizations
+                        ]
+                        if c.organizations
+                        else None
+                    ),
+                }
+                for c in self.contacts
+            ]
+
+        # Deceased mapping
+        if self.deceased.is_deceased:
+            payload["deceasedBoolean"] = True
+        if self.deceased.date is not None:
+            payload["deceasedDate"] = self.deceased.date.isoformat()
+
+        # Resource type
         payload["resourceType"] = "Patient"
+
         return payload
 
     @classmethod
@@ -134,147 +180,136 @@ class PatientProfile(BaseModel):
         """Build a PatientProfile from a FHIR JSON dict."""
         if payload.get("resourceType") != "Patient":
             raise ValueError("payload is not a FHIR Patient resource")
-        # Remove the resourceType key so pydantic ignores it
-        payload = {k: v for k, v in payload.items() if k != "resourceType"}
-        return cls.model_validate(payload)
+        data: Dict[str, Any] = {}
+        data["id"] = payload.get("id")
 
-    # Bundle helper: patient + clinical resources
+        # Names
+        name_entries = payload.get("name", [])
+        if name_entries:
+            first = name_entries[0]
+            data["name"] = HumanName(
+                first_name=first.get("given", [""])[0],
+                last_name=first.get("family", ""),
+                full_name=first.get("text"),
+            )
+            data["other_names"] = [
+                HumanName(
+                    first_name=n.get("given", [""])[0],
+                    last_name=n.get("family", ""),
+                    full_name=n.get("text"),
+                )
+                for n in name_entries[1:]
+            ]
 
-    def to_profile(self) -> Dict[str, Any]:
-        """Return a full FHIR Bundle ("profile") containing patient & clinical resources."""
-        bundle = {
-            "resourceType": "Bundle",
-            "type": "collection",
-            "entry": [{"resource": self.to_fhir()}],
-        }
+        # Telecoms
+        data["telecoms"] = [Telecom(**t) for t in payload.get("telecom", [])]
 
-        for seq in (
-            self.encounters,
-            self.conditions,
-            self.observations,
-            self.medication_requests,
-        ):
-            bundle["entry"].extend({"resource": r.to_fhir()} for r in seq)
+        # Gender, birth, marital
+        data["gender"] = payload.get("gender")
+        if "birthDate" in payload:
+            data["birth_date"] = date.fromisoformat(payload["birthDate"])
+        if ms := payload.get("maritalStatus"):
+            data["marital_status"] = ms.get("coding", [{}])[0].get("code") or ms.get(
+                "text"
+            )
 
-        return bundle
+        # Addresses
+        data["addresses"] = [
+            Address.model_validate(a) for a in payload.get("address", [])
+        ]
 
+        # Languages (communication)
+        data["languages"] = [
+            Language(
+                language=comm.get("language", {}).get("text", ""),
+                preferred=comm.get("preferred"),
+            )
+            for comm in payload.get("communication", [])
+        ]
 
-# Clinical resource models
+        # Deceased
+        dec_bool = payload.get("deceasedBoolean", False)
+        dec_date = payload.get("deceasedDate")
+        deceased_obj = DeceasedStatus(
+            is_deceased=bool(dec_bool),
+            date=date.fromisoformat(dec_date) if dec_date else None,
+        )
+        data["deceased"] = deceased_obj
 
+        # Contacts
+        contacts_data = []
+        for c in payload.get("contact", []):
+            contacts_data.append(
+                Contact(
+                    relationship=c.get("relationship", []),
+                    name=(
+                        HumanName(
+                            first_name=c.get("name", {}).get("given", [""])[0],
+                            last_name=c.get("name", {}).get("family", ""),
+                        )
+                        if c.get("name")
+                        else None
+                    ),
+                    telecoms=[Telecom(**t) for t in c.get("telecom", [])],
+                    addresses=(
+                        [Address.model_validate(a) for a in c.get("address", [])]
+                        if c.get("address")
+                        else []
+                    ),
+                    gender=c.get("gender"),
+                )
+            )
+        data["contacts"] = contacts_data
 
-class Condition(BaseModel):
-    id: str
-    subject: Reference  # Reference to Patient
-    code: CodeableConcept
-    clinical_status: Optional[str] = Field(None, alias="clinicalStatus")
-    onset_date: Optional[date] = Field(None, alias="onsetDate")
-    recorded_date: Optional[date] = Field(None, alias="recordedDate")
-    note: Optional[str] = None
-
-    class Config:
-        validate_by_name = True
-        str_strip_whitespace = True
-
-    def to_fhir(self) -> Dict[str, Any]:
-        payload = self.model_dump(by_alias=True, exclude_none=True, mode="json")
-        payload["resourceType"] = "Condition"
-        return payload
-
-
-class Observation(BaseModel):
-    id: str
-    subject: Reference
-    code: CodeableConcept
-    status: str
-    effective_datetime: Optional[datetime] = Field(None, alias="effectiveDateTime")
-    value: Optional[str] = Field(None, alias="valueString")
-
-    class Config:
-        validate_by_name = True
-        str_strip_whitespace = True
-
-    def to_fhir(self) -> Dict[str, Any]:
-        payload = self.model_dump(by_alias=True, exclude_none=True, mode="json")
-        payload["resourceType"] = "Observation"
-        return payload
-
-
-class Encounter(BaseModel):
-    id: str
-    subject: Reference
-    status: str
-    class_code: Optional[str] = Field(None, alias="class")
-    period_start: Optional[datetime] = Field(None, alias="periodStart")
-    period_end: Optional[datetime] = Field(None, alias="periodEnd")
-
-    class Config:
-        validate_by_name = True
-        str_strip_whitespace = True
-
-    def to_fhir(self) -> Dict[str, Any]:
-        payload = self.model_dump(by_alias=True, exclude_none=True, mode="json")
-        payload["resourceType"] = "Encounter"
-        return payload
+        return cls.model_validate(data)
 
 
-class MedicationRequest(BaseModel):
-    id: str
-    subject: Reference
-    status: str
-    intent: str
-    medication: CodeableConcept
-    authored_on: Optional[date] = Field(None, alias="authoredOn")
-    dosage_instruction: Optional[str] = Field(None, alias="dosageInstruction")
+class MedicalRecord(BaseModel):
+    """Placeholder for medical record grouping; currently no fields."""
 
-    class Config:
-        validate_by_name = True
-        str_strip_whitespace = True
+    pass
 
-    def to_fhir(self) -> Dict[str, Any]:
-        payload = self.model_dump(by_alias=True, exclude_none=True, mode="json")
-        payload["resourceType"] = "MedicationRequest"
-        return payload
+
+def main() -> None:
+    """Quick manual test for PatientProfile serialization."""
+
+    # Build example patient
+    patient = PatientProfile(
+        id="patient-001",
+        name=HumanName(first_name="John", last_name="Doe"),
+        other_names=[HumanName(first_name="Johnny", last_name="Doe")],
+        telecoms=[Telecom(system="phone", value="+1-555-555-0000", use_for="mobile")],
+        gender="male",
+        birth_date=date(1985, 4, 20),
+        addresses=[
+            Address(line=["1 Main St"], city="Metropolis", state="NY", country="USA")
+        ],
+        marital_status="single",
+        languages=[Language(language="en", preferred=True)],
+        contacts=[
+            Contact(
+                relationship=["mother"],
+                name=HumanName(first_name="Jane", last_name="Doe"),
+                telecoms=[Telecom(system="phone", value="+1-555-555-0001")],
+                gender="female",
+            )
+        ],
+    )
+
+    # Convert to FHIR JSON
+    as_fhir = patient.to_fhir()
+
+    # Round-trip back to object
+    patient_rt = PatientProfile.from_fhir(as_fhir)
+
+    import json, pprint
+
+    print("FHIR Patient JSON:")
+    print(json.dumps(as_fhir, indent=2))
+
+    print("\nRound-trip object:")
+    pprint.pp(patient_rt)
 
 
 if __name__ == "__main__":
-    patient = PatientProfile(
-        id="example-001",
-        identifier=[
-            Identifier(system="http://hospital.smarthealth.org", value="MRN123456")
-        ],
-        name=[HumanName(family="Doe", given=["John"])],
-        telecom=[ContactPoint(system="phone", value="+1-555-555-0000", use="mobile")],
-        gender="male",
-        birthDate=date(1985, 5, 23),  # we can use alias name
-        address=[
-            Address(
-                line=["1 Main St"],
-                city="Metropolis",
-                state="NY",
-                postalCode="12345",
-                country="USA",
-            )
-        ],
-        communication=[
-            PatientCommunication(
-                language=CodeableConcept(
-                    text="English", coding=[Coding(system="urn:ietf:bcp:47", code="en")]
-                ),
-                preferred=True,
-            )
-        ],
-    )
-
-    # Create a sample diagnosis (Condition)
-    condition = Condition(
-        id="cond-001",
-        subject=Reference(reference=f"Patient/{patient.id}"),
-        code=CodeableConcept(text="Hypertension"),
-        clinicalStatus="active",
-        onsetDate=date(2020, 1, 1),
-    )
-
-    # Export as FHIR Bundle containing patient and condition
-    import json, sys
-
-    json.dump(patient.to_profile(), sys.stdout, indent=2)
+    main()

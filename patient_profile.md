@@ -10,27 +10,19 @@
 classDiagram
     class PatientProfile {
         +str id
-        +List~Identifier~ identifier
-        +bool active
-        +List~HumanName~ name
-        +List~ContactPoint~ telecom
-        +str gender
+        +HumanName name
+        +List~HumanName~ other_names
+        +List~Telecom~ telecoms
+        +Gender gender
         +date birth_date
-        +bool deceased_boolean
-        +date deceased_date
-        +List~Address~ address
-        +str marital_status
-        +str language
-        +List~Contact~ contact
-        +List~PatientCommunication~ communication
-        +Reference managing_organization
-        +List~Reference~ general_practitioner
-        +List~Encounter~ encounters
-        +List~Condition~ conditions
-        +List~Observation~ observations
-        +List~MedicationRequest~ medication_requests
+        +DeceasedStatus deceased
+        +List~Address~ addresses
+        +MaritalStatus marital_status
+        +List~Language~ languages
+        +List~Contact~ contacts
+        +Organization managing_organization
+        +List~MedicalRecord~ medical_records
         +to_fhir() Dict
-        +to_profile() Dict
         +from_fhir(payload) PatientProfile
     }
 ```
@@ -42,32 +34,24 @@ classDiagram
 | Field | Type | FHIR Alias | Description |
 |-------|------|-----------|-------------|
 | `id` | `str` | – | Logical identifier for the patient within your system. |
-| `identifier` | `List[Identifier]` | – | List of business identifiers (MRN, national ID, insurance number, …). |
-| `active` | `bool` | – | Whether the record is active (default `True`). |
-| `name` | `List[HumanName]` | – | Patient names. |
-| `telecom` | `List[ContactPoint]` | – | Phone numbers, email addresses, etc. |
-| `gender` | `str` | – | `male`, `female`, `other`, or `unknown`. |
+| `name` | `HumanName` | – | Primary name (first & last). |
+| `other_names` | `List[HumanName]` | – | Alternate names. |
+| `telecoms` | `List[Telecom]` | `telecom` | Phone numbers, email, etc. |
+| `gender` | `Gender` | `gender` | Constrained literal enum. |
 | `birth_date` | `date` | `birthDate` | Date of birth. |
-| `deceased_boolean` | `bool` | `deceasedBoolean` | Indicates if the patient is deceased. |
-| `deceased_date` | `date` | `deceasedDate` | Date of death. |
-| `address` | `List[Address]` | – | Patient addresses. |
-| `marital_status` | `str` | `maritalStatus` | Marital status. |
-| `language` | `str` | – | Default language (ISO-639-1). |
-| `contact` | `List[Contact]` | – | Emergency contacts. |
-| `communication` | `List[PatientCommunication]` | – | Preferred communication languages. |
-| `managing_organization` | `Reference` | `managingOrganization` | Primary managing organization. |
-| `general_practitioner` | `List[Reference]` | `generalPractitioner` | Primary care practitioners. |
+| `deceased` | `DeceasedStatus` | `deceasedBoolean` / `deceasedDate` | Death info. |
+| `addresses` | `List[Address]` | `address` | Postal addresses. |
+| `marital_status` | `MaritalStatus` | `maritalStatus` | Enum marital status. |
+| `languages` | `List[Language]` | `communication` | Spoken languages. |
+| `contacts` | `List[Contact]` | `contact` | Emergency/related contacts. |
+| `managing_organization` | `Organization` | `managingOrganization` | Managing org. |
+| `medical_records` | `List[MedicalRecord]` | – | Linked medical record bundles. |
 
 ---
 
-## 3. Embedded Medical Record Fields
+## 3. Medical Records
 
-| Field | Type | Description |
-|-------|------|-------------|
-| `encounters` | `List[Encounter]` | Visits, admissions, or other encounters. |
-| `conditions` | `List[Condition]` | Diagnoses or health conditions. |
-| `observations` | `List[Observation]` | Lab results, vitals, measurements. |
-| `medication_requests` | `List[MedicationRequest]` | Medication orders / prescriptions. |
+Each `MedicalRecord` bundle can include encounters, conditions, observations, prescriptions, etc., and is referenced in `medical_records`.
 
 Each nested resource exposes `to_fhir()` which adds its own `resourceType` and returns a FHIR-compliant dict.
 
@@ -78,23 +62,6 @@ Each nested resource exposes `to_fhir()` which adds its own `resourceType` and r
 ### `to_fhir() -> dict`
 
 Returns JSON for the **Patient** resource only (demographics). Clinical lists are intentionally omitted to match the FHIR Patient schema.
-
-### `to_profile() -> dict`
-
-Creates a FHIR **Bundle** of type `collection`:
-
-```jsonc
-{
-  "resourceType": "Bundle",
-  "type": "collection",
-  "entry": [
-    { "resource": { /* Patient */ } },
-    { "resource": { /* Encounter #1 */ } },
-    { "resource": { /* Condition #1 */ } },
-    …
-  ]
-}
-```
 
 ### `from_fhir(payload: dict) -> PatientProfile`
 
@@ -132,8 +99,5 @@ patient.conditions.append(
     )
 )
 
-# Export as a FHIR Bundle
-bundle = patient.to_profile()
-```
-
-The resulting Bundle can be submitted to any FHIR-compliant server.
+# Export to FHIR Patient JSON
+patient_json = patient.to_fhir()
