@@ -2,18 +2,51 @@ from __future__ import annotations
 
 import time
 import asyncio
+import json
 
-from openai import AsyncOpenAI, OpenAI
+from openai import AsyncOpenAI
 
 from patient_profile import PatientProfile
 
 
-_SYSTEM_PROMPT = (
-    "You are a patient-profile extractor.\n\n"
-    "OUTPUT: raw JSON (no markdown) parsable by the `PatientProfile` Pydantic model.\n"
-    "• Only include fields you can confidently identify.\n"
-    "• If the text contains NO demographic facts, return an empty JSON object `{}`."
-)
+_SYSTEM_PROMPT = """
+**You are the Patient-Profile Extractor.** Your task is to analyse patient-provided text and pull out demographic facts only.
+
+# Task
+Read the input text (usually one or more chat messages from the patient). Identify any demographic information (name, gender, birth date, phone, email, address, spoken languages, emergency contacts).
+
+# JSON schema of the profile
+```
+{
+  "_id": "<string identifier – generate or reuse if present>",
+  "name": {
+    "first_name": "<given name>",
+    "last_name":  "<family name>",
+    "full_name":  "<optional full string>"
+  },
+  "other_names": [ { …same shape as name… } ],
+  "gender":        "male | female | other | unknown",
+  "birth_date":    "YYYY-MM-DD",
+  "phones":  [ { "value": "<digits>",  "use_for": "home|work|mobile" } ],
+  "emails":  [ { "value": "<email>", "use_for": "home|work" } ],
+  "faxes":   [ { "value": "<digits>",  "use_for": "home|work" } ],
+  "addresses": [ { "line": ["street…"], "city": "", "state": "", "country": "" } ],
+  "languages": [ { "value": "<ISO-639-1>", "preferred": true|false } ],
+  "contacts": [
+     {
+       "relationship": ["mother" | "father" | …],
+       "name": { … },
+       "phones":  [...],
+       "emails":  [...],
+       "addresses": [...]
+     }
+  ]
+}
+```
+
+# Output
+Return **raw JSON (no markdown fences)** that matches the schema above (keys may be omitted if unknown). If the text contains **no** demographic facts, output `{}`.
+"""
 
 
 class PatientProfileExtractor:
@@ -25,21 +58,24 @@ class PatientProfileExtractor:
         self.client = client or AsyncOpenAI()
         self.system_prompt = system_prompt
 
-    async def extract_async(
-        self, text: str, model: str = "gpt-4o-mini"
-    ) -> PatientProfile:
-        start = time.perf_counter()
-        resp = await self.client.responses.parse(
+    async def extract_async(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile:
+        tic = time.perf_counter()
+        resp = await self.client.chat.completions.create(
             model=model,
-            input=[
+            messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": text},
             ],
-            text_format=PatientProfile,
         )
 
-        print(f"[PatientProfileExtractor] elapsed: {time.perf_counter() - start:.2f}s")
-        return resp.output_parsed
+        raw = resp.choices[0].message.content.strip()
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as e:
+            raise ValueError("Model did not return valid JSON:\n" + raw) from e
+
+        print(f"[PatientProfileExtractor] elapsed: {time.perf_counter()-tic:.2f}s")
+        return PatientProfile.model_validate(data)
 
     def extract(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile:
         """Sync wrapper around `extract_async`."""

@@ -18,10 +18,10 @@ MaritalStatus: TypeAlias = Literal[
 ]
 
 
-class DeceasedStatus(BaseModel):
+class Deceased(BaseModel):
     """Represents patient death information."""
 
-    is_deceased: bool = False
+    status: bool = False
     date: Optional[date] = None
 
 
@@ -44,17 +44,17 @@ class HumanName(BaseModel):
 
 
 class Phone(BaseModel):
-    number: str
+    value: str
     use_for: Optional[Literal["home", "work", "mobile"]] = None
 
 
 class Email(BaseModel):
-    address: str
+    value: str
     use_for: Optional[Literal["home", "work"]] = None
 
 
 class Fax(BaseModel):
-    number: str
+    value: str
     use_for: Optional[Literal["home", "work"]] = None
 
 
@@ -83,12 +83,12 @@ class Contact(BaseModel):
 
 
 class Language(BaseModel):
-    language: str
+    value: str
     preferred: Optional[bool] = None
 
 
 class PatientProfile(BaseModel):
-    id: str
+    _id: str
     name: HumanName
     other_names: List[HumanName] = Field(default_factory=list)
     phones: List[Phone] = Field(default_factory=list)
@@ -97,7 +97,7 @@ class PatientProfile(BaseModel):
     gender: Optional[Gender] = None
     birth_date: Optional[date] = None
     addresses: List[Address] = Field(default_factory=list)
-    deceased: DeceasedStatus = Field(default_factory=DeceasedStatus)
+    deceased: Deceased = Field(default_factory=Deceased)
     marital_status: Optional[MaritalStatus] = None
     contacts: List[Contact] = Field(default_factory=list)
     languages: List[Language] = Field(default_factory=list)
@@ -110,7 +110,7 @@ class PatientProfile(BaseModel):
         payload: Dict[str, Any] = {}
 
         # Identifiers
-        payload["id"] = self.id
+        payload["id"] = self._id
 
         # Names
         names_list = [self.name.to_fhir_dict()] + [
@@ -121,11 +121,11 @@ class PatientProfile(BaseModel):
         # Telecoms
         telecom_entries = []
         for ph in self.phones:
-            telecom_entries.append({"system": "phone", "value": ph.number, "use": ph.use_for})
+            telecom_entries.append({"system": "phone", "value": ph.value, "use": ph.use_for})
         for em in self.emails:
-            telecom_entries.append({"system": "email", "value": em.address, "use": em.use_for})
+            telecom_entries.append({"system": "email", "value": em.value, "use": em.use_for})
         for fx in self.faxes:
-            telecom_entries.append({"system": "fax", "value": fx.number, "use": fx.use_for})
+            telecom_entries.append({"system": "fax", "value": fx.value, "use": fx.use_for})
         if telecom_entries:
             payload["telecom"] = telecom_entries
 
@@ -149,7 +149,7 @@ class PatientProfile(BaseModel):
         # Languages
         if self.languages:
             payload["communication"] = [
-                {"language": {"text": l.language}, "preferred": l.preferred}
+                {"language": {"text": l.value}, "preferred": l.preferred}
                 for l in self.languages
             ]
 
@@ -188,7 +188,7 @@ class PatientProfile(BaseModel):
             ]
 
         # Deceased mapping
-        if self.deceased.is_deceased:
+        if self.deceased.status:
             payload["deceasedBoolean"] = True
         if self.deceased.date is not None:
             payload["deceasedDate"] = self.deceased.date.isoformat()
@@ -230,11 +230,11 @@ class PatientProfile(BaseModel):
         faxes = []
         for t in payload.get("telecom", []):
             if t.get("system") == "phone":
-                phones.append(Phone(number=t["value"], use_for=t.get("use")))
+                phones.append(Phone(value=t["value"], use_for=t.get("use")))
             elif t.get("system") == "email":
-                emails.append(Email(address=t["value"], use_for=t.get("use")))
+                emails.append(Email(value=t["value"], use_for=t.get("use")))
             elif t.get("system") == "fax":
-                faxes.append(Fax(number=t["value"], use_for=t.get("use")))
+                faxes.append(Fax(value=t["value"], use_for=t.get("use")))
         data["phones"] = phones
         data["emails"] = emails
         data["faxes"] = faxes
@@ -256,7 +256,7 @@ class PatientProfile(BaseModel):
         # Languages (communication)
         data["languages"] = [
             Language(
-                language=comm.get("language", {}).get("text", ""),
+                value=comm.get("language", {}).get("text", ""),
                 preferred=comm.get("preferred"),
             )
             for comm in payload.get("communication", [])
@@ -265,8 +265,8 @@ class PatientProfile(BaseModel):
         # Deceased
         dec_bool = payload.get("deceasedBoolean", False)
         dec_date = payload.get("deceasedDate")
-        deceased_obj = DeceasedStatus(
-            is_deceased=bool(dec_bool),
+        deceased_obj = Deceased(
+            status=bool(dec_bool),
             date=date.fromisoformat(dec_date) if dec_date else None,
         )
         data["deceased"] = deceased_obj
@@ -315,23 +315,23 @@ def main() -> None:
 
     # Build example patient
     patient = PatientProfile(
-        id="patient-001",
+        _id="patient-001",
         name=HumanName(first_name="John", last_name="Doe"),
         other_names=[HumanName(first_name="Johnny", last_name="Doe")],
-        phones=[Phone(number="+33 6 12 34 56 78", use_for="mobile")],
-        emails=[Email(address="maria.garcia@louvre.fr", use_for="work")],
+        phones=[Phone(value="+33 6 12 34 56 78", use_for="mobile")],
+        emails=[Email(value="maria.garcia@louvre.fr", use_for="work")],
         gender="male",
         birth_date=date(1985, 4, 20),
         addresses=[
             Address(line=["1 Main St"], city="Metropolis", state="NY", country="USA")
         ],
         marital_status="single",
-        languages=[Language(language="en", preferred=True)],
+        languages=[Language(value="en", preferred=True)],
         contacts=[
             Contact(
                 relationship=["mother"],
                 name=HumanName(first_name="Jane", last_name="Doe"),
-                phones=[Phone(number="+1-555-555-0001")],
+                phones=[Phone(value="+1-555-555-0001")],
                 gender="female",
             )
         ],

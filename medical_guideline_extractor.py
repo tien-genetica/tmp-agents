@@ -9,11 +9,42 @@ from openai import AsyncOpenAI, OpenAI
 from medical_guideline import MedicalGuideline
 
 
-_SYSTEM_PROMPT = (
-    "You are a medical guideline extractor.\n"
-    "Return raw JSON (no markdown) that can be parsed directly into the `MedicalGuideline` Pydantic model.\n"
-    "If the text contains no guideline information, return an empty JSON object {}."
-)
+_SYSTEM_PROMPT = """
+**You are the Medical-Guideline Extractor.** Your job is to read text (e.g. news, papers, policy documents) and output ONLY structured guideline metadata.
+
+# Task
+Identify guideline information: id/title/category (international | vietnamese | other), source organisation, url, version, effective date, tags, language, lab test reference ranges.
+
+# JSON schema
+Return raw JSON matching the `MedicalGuideline` Pydantic model. Main keys:
+```
+{
+  "id": "<string id>",
+  "title": "<title>",
+  "description": "<optional description>",
+  "category": "international | vietnamese | other",
+  "source": "<organisation>",
+  "url": "<link>",
+  "effectiveDate": "YYYY-MM-DD",
+  "version": "<version string>",
+  "tags": ["<tag>", ...],
+  "language": "<ISO-639-1>",
+  "labTests": [
+     {
+       "code": "<loinc-or-code>",
+       "name": "<test name>",
+       "internationalRanges": [ {"lower": n?, "upper": n?, "unit": "", "ageMin": n?, "ageMax": n?, "sex": "male|female"?} ],
+       "vietnameseRanges":    [ ... ]
+     }
+  ]
+}
+```
+
+# Output
+• Provide raw JSON only (no markdown).  
+• Omit fields you cannot infer.  
+• If no guideline info is present, output `{}`.
+"""
 
 
 class MedicalGuidelineExtractor:
@@ -30,20 +61,23 @@ class MedicalGuidelineExtractor:
     async def extract_async(
         self, text: str, model: str = "gpt-4o-mini"
     ) -> MedicalGuideline:
-        start = time.perf_counter()
-        resp = await self.client.responses.parse(
+        tic = time.perf_counter()
+        resp = await self.client.chat.completions.create(
             model=model,
-            input=[
+            messages=[
                 {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": text},
             ],
-            text_format=MedicalGuideline,
         )
 
-        print(
-            f"[MedicalGuidelineExtractor] elapsed: {time.perf_counter() - start:.2f}s"
-        )
-        return resp.output_parsed
+        raw = resp.choices[0].message.content.strip()
+        try:
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as e:
+            raise ValueError("Model did not return valid JSON:\n" + raw) from e
+
+        print(f"[MedicalGuidelineExtractor] elapsed: {time.perf_counter()-tic:.2f}s")
+        return MedicalGuideline.model_validate(data)
 
     def extract(self, text: str, model: str = "gpt-4o-mini") -> MedicalGuideline:
         """Sync helper around `extract_async`."""
