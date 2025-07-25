@@ -9,7 +9,11 @@ from openai import AsyncOpenAI, OpenAI
 from medical_guideline import MedicalGuideline
 
 
-_SYSTEM_PROMPT = "You are a medical guideline extractor. Output ONLY JSON that fits the MedicalGuideline Pydantic model."
+_SYSTEM_PROMPT = (
+    "You are a medical guideline extractor.\n"
+    "Return raw JSON (no markdown) that can be parsed directly into the `MedicalGuideline` Pydantic model.\n"
+    "If the text contains no guideline information, return an empty JSON object {}."
+)
 
 
 class MedicalGuidelineExtractor:

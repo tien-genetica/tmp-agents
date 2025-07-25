@@ -9,9 +9,10 @@ from patient_profile import PatientProfile
 
 
 _SYSTEM_PROMPT = (
-    "You are a patient profile extractor. Your ONLY task is to read the user's text and output patient demographics as JSON.\n"
-    "Return raw JSON (no markdown) that can be parsed directly by the Python `PatientProfile` Pydantic model.\n"
-    "Include keys only if the information is present. Follow ISO-8601 dates."
+    "You are a patient-profile extractor.\n\n"
+    "OUTPUT: raw JSON (no markdown) parsable by the `PatientProfile` Pydantic model.\n"
+    "• Only include fields you can confidently identify.\n"
+    "• If the text contains NO demographic facts, return an empty JSON object `{}`."
 )
 
 

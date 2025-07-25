@@ -40,10 +40,22 @@ class HumanName(BaseModel):
         }
 
 
-class Telecom(BaseModel):
-    system: Literal["phone", "fax", "email", "url", "sms", "other"]
-    value: str
-    use_for: Optional[Literal["home", "work", "temp", "old", "mobile"]] = None
+# ----- Contact details ------------------------------------------------------
+
+
+class Phone(BaseModel):
+    number: str
+    use_for: Optional[Literal["home", "work", "mobile"]] = None
+
+
+class Email(BaseModel):
+    address: str
+    use_for: Optional[Literal["home", "work"]] = None
+
+
+class Fax(BaseModel):
+    number: str
+    use_for: Optional[Literal["home", "work"]] = None
 
 
 class Address(BaseModel):
@@ -62,7 +74,9 @@ class Organization(BaseModel):
 class Contact(BaseModel):
     relationship: List[str] = Field(default_factory=list)
     name: Optional[HumanName] = None
-    telecoms: List[Telecom] = Field(default_factory=list)
+    phones: List[Phone] = Field(default_factory=list)
+    emails: List[Email] = Field(default_factory=list)
+    faxes: List[Fax] = Field(default_factory=list)
     addresses: List[Address] = Field(default_factory=list)
     gender: Optional[Gender] = None
     organizations: List[Organization] = Field(default_factory=list)
@@ -77,7 +91,9 @@ class PatientProfile(BaseModel):
     id: str
     name: HumanName
     other_names: List[HumanName] = Field(default_factory=list)
-    telecoms: List[Telecom] = Field(default_factory=list)
+    phones: List[Phone] = Field(default_factory=list)
+    emails: List[Email] = Field(default_factory=list)
+    faxes: List[Fax] = Field(default_factory=list)
     gender: Optional[Gender] = None
     birth_date: Optional[date] = None
     addresses: List[Address] = Field(default_factory=list)
@@ -103,8 +119,15 @@ class PatientProfile(BaseModel):
         payload["name"] = names_list
 
         # Telecoms
-        if self.telecoms:
-            payload["telecom"] = [t.__dict__ for t in self.telecoms]
+        telecom_entries = []
+        for ph in self.phones:
+            telecom_entries.append({"system": "phone", "value": ph.number, "use": ph.use_for})
+        for em in self.emails:
+            telecom_entries.append({"system": "email", "value": em.address, "use": em.use_for})
+        for fx in self.faxes:
+            telecom_entries.append({"system": "fax", "value": fx.number, "use": fx.use_for})
+        if telecom_entries:
+            payload["telecom"] = telecom_entries
 
         # Gender / birth / marital
         if self.gender:
@@ -142,7 +165,7 @@ class PatientProfile(BaseModel):
                 {
                     "relationship": c.relationship,
                     "name": c.name.to_fhir_dict() if c.name else None,
-                    "telecom": [t.__dict__ for t in c.telecoms] if c.telecoms else None,
+                    "telecom": [t.__dict__ for t in c.phones] + [t.__dict__ for t in c.emails] + [t.__dict__ for t in c.faxes] if c.phones or c.emails or c.faxes else None,
                     "address": (
                         [
                             a.model_dump(exclude_none=True, mode="json")
@@ -202,7 +225,19 @@ class PatientProfile(BaseModel):
             ]
 
         # Telecoms
-        data["telecoms"] = [Telecom(**t) for t in payload.get("telecom", [])]
+        phones = []
+        emails = []
+        faxes = []
+        for t in payload.get("telecom", []):
+            if t.get("system") == "phone":
+                phones.append(Phone(number=t["value"], use_for=t.get("use")))
+            elif t.get("system") == "email":
+                emails.append(Email(address=t["value"], use_for=t.get("use")))
+            elif t.get("system") == "fax":
+                faxes.append(Fax(number=t["value"], use_for=t.get("use")))
+        data["phones"] = phones
+        data["emails"] = emails
+        data["faxes"] = faxes
 
         # Gender, birth, marital
         data["gender"] = payload.get("gender")
@@ -239,6 +274,9 @@ class PatientProfile(BaseModel):
         # Contacts
         contacts_data = []
         for c in payload.get("contact", []):
+            phones = [Phone(**t) for t in c.get("telecom", []) if t.get("system") == "phone"]
+            emails = [Email(**t) for t in c.get("telecom", []) if t.get("system") == "email"]
+            faxes = [Fax(**t) for t in c.get("telecom", []) if t.get("system") == "fax"]
             contacts_data.append(
                 Contact(
                     relationship=c.get("relationship", []),
@@ -250,7 +288,9 @@ class PatientProfile(BaseModel):
                         if c.get("name")
                         else None
                     ),
-                    telecoms=[Telecom(**t) for t in c.get("telecom", [])],
+                    phones=phones,
+                    emails=emails,
+                    faxes=faxes,
                     addresses=(
                         [Address.model_validate(a) for a in c.get("address", [])]
                         if c.get("address")
@@ -278,7 +318,8 @@ def main() -> None:
         id="patient-001",
         name=HumanName(first_name="John", last_name="Doe"),
         other_names=[HumanName(first_name="Johnny", last_name="Doe")],
-        telecoms=[Telecom(system="phone", value="+1-555-555-0000", use_for="mobile")],
+        phones=[Phone(number="+33 6 12 34 56 78", use_for="mobile")],
+        emails=[Email(address="maria.garcia@louvre.fr", use_for="work")],
         gender="male",
         birth_date=date(1985, 4, 20),
         addresses=[
@@ -290,7 +331,7 @@ def main() -> None:
             Contact(
                 relationship=["mother"],
                 name=HumanName(first_name="Jane", last_name="Doe"),
-                telecoms=[Telecom(system="phone", value="+1-555-555-0001")],
+                phones=[Phone(number="+1-555-555-0001")],
                 gender="female",
             )
         ],
