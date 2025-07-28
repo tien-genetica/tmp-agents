@@ -3,432 +3,228 @@ from __future__ import annotations
 import time
 import asyncio
 import json
-import time
-import re  # added
-from typing import Any, Dict, List, MutableMapping, Optional
 
 from openai import AsyncOpenAI
 
 from patient_profile import PatientProfile
 
-# ---------------------------------------------------------------------------
-# System prompts
-# ---------------------------------------------------------------------------
 
-BASIC_INFO_SYSTEM_PROMPT = """
-You are an AI specialized in extracting basic demographic information about a patient from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description or just a text. 
-Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
+_SYSTEM_PROMPT = """
+**You are the Patient-Profile Extractor.** Your task is to analyse text, which may include conversations between a patient and a assistant, and pull out demographic facts about the patient only.
 
-```json
+# Task
+Read the input text (e.g., chat messages or a full conversation). Identify any demographic information about the patient (name, gender, birth date, phone, email, address, spoken languages, emergency contacts).
+**Focus only on information provided by or about the patient – ignore assistant statements unless they directly confirm patient details. If the text is a conversation, distinguish patient responses (e.g., prefixed by 'Patient:' or similar). If information is unclear or conflicting, use the most reliable value or omit it.**
+
+# Examples
+**Example 1 (Simple patient text):**
+Input: "Hi, I'm John Doe, male, born 1990-05-15. My phone is 123-456-7890."
+Output: {"name": {"first_name": "John", "last_name": "Doe"}, "gender": "male", "birth_date": "1990-05-15", "phones": [{"value": "1234567890", "use_for": "mobile"}]}
+
+**Example 2 (Full conversation):**
+Input:
+Assistant: What's your name and date of birth?
+Patient: My name is Anna Smith, I was born on 1985-02-20, female. Phone: +1-234-567-8901.
+Assistant: Okay, noted.
+Output: {"name": {"first_name": "Anna", "last_name": "Smith"}, "gender": "female", "birth_date": "1985-02-20", "phones": [{"value": "12345678901", "use_for": "mobile"}]}
+
+# JSON schema of the profile
+```
 {
-  "_id": "",
+  "_id": "<string identifier – generate or reuse if present>",
   "name": {
-    "first_name": "",
-    "last_name": "",
-    "full_name": ""
+    "first_name": "<given name>",
+    "last_name":  "<family name>",
+    "full_name":  "<optional full string>"
   },
-  "other_names": [
-    {
-      "first_name": "",
-      "last_name": "",
-      "full_name": ""
-    }
-  ],
-  "gender": "",
-  "birth_date": "",
-  "marital_status": "",
-  "languages": [
-    {
-      "value": "",
-      "preferred": false
-    }
-  ],
-  "deceased": {
-    "status": false,
-    "date": ""
-  }
-}
-
-Instructions:
-
-1. Extract the patient's primary name, populating first_name, last_name, and full_name (if provided directly or constructed as "first_name last_name"). If only a full name is given, infer first_name and last_name where possible or leave them empty.
-2. Extract any additional names (aliases or other names) and populate other_names with the same structure.
-3. Extract gender, which must be one of: "male", "female", "other", "unknown". Use "unknown" if not specified.
-4. Extract birth date in ISO 8601 format (YYYY-MM-DD). If age is provided, estimate birth year (assume current year is 2025) and use January 1 (YYYY-01-01) if exact date is unavailable.
-5. Extract marital status, which must be one of: "single", "married", "divorced", "widowed", "separated", "unknown". Use "unknown" if not specified.
-6. Extract languages spoken, populating value (e.g., "English", "Spanish") and preferred (true if explicitly stated as preferred, else false).
-7. Determine if the patient is deceased and extract the date of death (YYYY-MM-DD) if provided. Set status to false if not mentioned.
-8. If _id is not mentioned, leave it empty (to be assigned later).
-9. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-10. Return the result as a JSON object.
-"""
-
-CONTACT_INFO_SYSTEM_PROMPT = """
-You are an AI specialized in extracting contact information about a patient from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description. Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
-
-{
-  "phones": [
-    {
-      "value": "",
-      "use_for": ""
-    }
-  ],
-  "emails": [
-    {
-      "value": "",
-      "use_for": ""
-    }
-  ],
-  "faxes": [
-    {
-      "value": "",
-      "use_for": ""
-    }
-  ],
-  "addresses": [
-    {
-      "line": [],
-      "city": "",
-      "state": "",
-      "postal_code": "",
-      "country": ""
-    }
-  ]
-}
-
-Instructions:
-
-1. Extract phone numbers and classify their use_for as one of: "home", "work", "mobile", "other". Assume "mobile" if not specified.
-2. Extract email addresses and classify their use_for as one of: "home", "work", "other". Assume "other" if not specified.
-3. Extract fax numbers and classify their use_for as one of: "home", "work", "other". Assume "other" if not specified.
-4. Extract addresses, populating line (street address as a list of strings), city, state, postal_code, and country. Combine multiple street lines into line if necessary.
-5. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-6. Return the result as a JSON object.
-"""
-
-
-RELATIONSHIPS_SYSTEM_PROMPT = """
-You are an AI specialized in extracting information about a patient’s contacts (e.g., family members or emergency contacts) from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description. Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
-
-{
+  "other_names": [ { …same shape as name… } ],
+  "gender":        "male | female | other | unknown",
+  "birth_date":    "<date string in ISO-8601 format>",
+  "phones":  [ { "value": "<digits>",  "use_for": "home|work|mobile|other" } ],
+  "emails":  [ { "value": "<email>", "use_for": "home|work|other" } ],
+  "faxes":   [ { "value": "<digits>",  "use_for": "home|work|other" } ],
+  "addresses": [ { "line": ["street…"], "city": "", "state": "", "country": "" } ],
+  "languages": [ { "value": "<ISO-639-1>", "preferred": true|false } ],
   "contacts": [
-    {
-      "relationship": [],
-      "name": {
-        "first_name": "",
-        "last_name": "",
-        "full_name": ""
-      },
-      "phones": [
-        {
-          "value": "",
-          "use_for": ""
-        }
-      ],
-      "emails": [
-        {
-          "value": "",
-          "use_for": ""
-        }
-      ],
-      "faxes": [
-        {
-          "value": "",
-          "use_for": ""
-        }
-      ],
-      "addresses": [
-        {
-          "line": [],
-          "city": "",
-          "state": "",
-          "postal_code": "",
-          "country": ""
-        }
-      ],
-      "gender": "",
-      "organizations": [
-        {
-          "reference": "",
-          "display": ""
-        }
-      ]
-    }
+     {
+       "relationship": ["mother" | "father" | …],
+       "name": { … },
+       "phones":  [...],
+       "emails":  [...],
+       "addresses": [...]
+     }
   ]
 }
+```
 
-Instructions:
-
-1. Identify individuals mentioned as contacts (e.g., family members, emergency contacts) and extract their names, populating first_name, last_name, and full_name (if provided or constructed).
-2. Extract relationships (e.g., "wife", "husband", "child") as a list in relationship.
-3. Extract phone numbers, emails, and faxes for each contact, classifying their use_for as one of: "home", "work", "mobile", "other" for phones/faxes, and "home", "work", "other" for emails. Assume defaults ("mobile" for phones, "other" for faxes/emails) if not specified.
-4. Extract addresses for each contact, populating line, city, state, postal_code, and country.
-5. Extract contact gender, which must be one of: "male", "female", "other", "unknown". Use "unknown" if not specified.
-6. Extract any organizations associated with the contact (e.g., workplace or hospital), populating reference and display.
-7. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-8. Return the result as a JSON object.
+# Output
+Return **raw JSON (no markdown fences)** that matches the schema above (keys may be omitted if unknown).
+If the text contains **no** demographic facts, output `{}`.
 """
 
-# ---------------------------------------------------------------------------
-# Internal helpers
-# ---------------------------------------------------------------------------
 
+class PatientProfileExtractor:
+    """Callable extractor object wrapping OpenAI responses.parse."""
 
-class _JsonExtractor:
-    """Low-level wrapper that calls the OpenAI ChatCompletion API and parses JSON."""
-
-    def __init__(self, system_prompt: str, client: Optional[AsyncOpenAI] = None):
-        self._prompt = system_prompt
-        self._client: AsyncOpenAI = client or AsyncOpenAI()
+    def __init__(
+        self, client: AsyncOpenAI | None = None, system_prompt: str = _SYSTEM_PROMPT
+    ):
+        self.client = client or AsyncOpenAI()
+        self.system_prompt = system_prompt
 
     async def extract_async(
         self, text: str, model: str = "gpt-4o-mini"
-    ) -> Dict[str, Any]:
-        """Return a *partial* patient profile section (dict)."""
+    ) -> PatientProfile | None:
         tic = time.perf_counter()
-        resp = await self._client.chat.completions.create(
+        resp = await self.client.chat.completions.create(
             model=model,
             messages=[
-                {"role": "system", "content": self._prompt},
+                {"role": "system", "content": self.system_prompt},
                 {"role": "user", "content": text},
             ],
         )
 
-        raw_content: str = resp.choices[0].message.content.strip()
-        # Handle common LLM habit of wrapping JSON inside markdown fences.
-        cleaned = raw_content
-        if cleaned.startswith("```"):
-            # Remove opening ``` or ```json line
-            cleaned = re.sub(r"^```(?:json)?\s*", "", cleaned, flags=re.IGNORECASE)
-            # Remove trailing fence
-            cleaned = re.sub(r"\s*```$", "", cleaned)
+        raw = resp.choices[0].message.content.strip()
         try:
-            data: Dict[str, Any] = json.loads(cleaned) if cleaned else {}
-        except json.JSONDecodeError as exc:  # pragma: no cover
-            raise ValueError(
-                "Model did not return valid JSON:\n" + raw_content
-            ) from exc
+            data = json.loads(raw) if raw else {}
+        except json.JSONDecodeError as e:
+            raise ValueError("Model did not return valid JSON:\n" + raw) from e
 
-        dur = time.perf_counter() - tic
-        return data
+        print(f"[PatientProfileExtractor] elapsed: {time.perf_counter()-tic:.2f}s")
+        if not data:
+            return None
+        return PatientProfile.model_validate(data)
 
-    def extract(self, text: str, model: str = "gpt-4o-mini") -> Dict[str, Any]:
-        """Synchronous wrapper around :meth:`extract_async`."""
+    def extract(self, text: str, model: str = "gpt-4o-mini") -> PatientProfile | None:
+        """Sync wrapper around `extract_async`."""
+
         return asyncio.run(self.extract_async(text, model=model))
 
 
-# Concrete extractor singletons ------------------------------------------------
-_BASIC_INFO_EXTRACTOR = _JsonExtractor(BASIC_INFO_SYSTEM_PROMPT)
-_CONTACT_INFO_EXTRACTOR = _JsonExtractor(CONTACT_INFO_SYSTEM_PROMPT)
-_RELATIONSHIPS_EXTRACTOR = _JsonExtractor(RELATIONSHIPS_SYSTEM_PROMPT)
-
-
-# ---------------------------------------------------------------------------
-# Public helper functions – each returns *partial* JSON dictionaries.
-# ---------------------------------------------------------------------------
-
-
-def extract_basic_info(text: str, model: str = "gpt-4o-mini") -> Dict[str, Any]:
-    """Extract basic demographic information only (name, gender, birth date, …)."""
-    return _BASIC_INFO_EXTRACTOR.extract(text, model=model)
-
-
-def extract_contact_info(text: str, model: str = "gpt-4o-mini") -> Dict[str, Any]:
-    """Extract phones, emails, faxes and addresses only."""
-    return _CONTACT_INFO_EXTRACTOR.extract(text, model=model)
-
-
-def extract_relationships(text: str, model: str = "gpt-4o-mini") -> Dict[str, Any]:
-    """Extract family / emergency contact information only."""
-    return _RELATIONSHIPS_EXTRACTOR.extract(text, model=model)
-
-
-# ---------------------------------------------------------------------------
-# Merging utilities
-# ---------------------------------------------------------------------------
-
-
-def _deep_merge(dest: MutableMapping[str, Any], src: MutableMapping[str, Any]) -> None:
-    """Recursively merge *src* into *dest* (in-place).
-
-    Lists are concatenated, dictionaries are merged recursively, and scalar
-    values in *dest* are overwritten *only if* they are falsy ("empty").
-    """
-    for key, src_val in src.items():
-        if src_val in (None, "", [], {}):
-            # Skip empty values coming from the model.
-            continue
-
-        if key not in dest or dest[key] in (None, "", [], {}):
-            dest[key] = src_val
-            continue
-
-        dest_val = dest[key]
-
-        # Merge lists → concatenate unique elements preserving order.
-        if isinstance(dest_val, list) and isinstance(src_val, list):
-            dest_val.extend(x for x in src_val if x not in dest_val)
-        # Merge dicts → recurse.
-        elif isinstance(dest_val, dict) and isinstance(src_val, dict):
-            _deep_merge(dest_val, src_val)
-        else:
-            # Conflict – prefer existing *dest* value and ignore *src*.
-            continue
-
-
-# ---------------------------------------------------------------------------
-# Utility: sanitize merged dict ------------------------------------------------
-# ---------------------------------------------------------------------------
-
-
-def _sanitize(obj: Any) -> Any:  # type: ignore[return-any]
-    """Recursively replace empty strings with ``None`` and prune empty containers.
-
-    This ensures the payload conforms to the `PatientProfile` schema where many
-    fields are optional (accepting ``None``) but *not* empty strings.
-    """
-    if isinstance(obj, dict):
-        new_dict: Dict[str, Any] = {}
-        for k, v in obj.items():
-            cleaned = _sanitize(v)
-            if cleaned in ("", [], {}, None):
-                # Keep booleans and numeric zeroes; drop other empties.
-                if isinstance(cleaned, bool) or cleaned == 0:
-                    new_dict[k] = cleaned
-                elif cleaned is None:
-                    # Only keep key if schema requires it explicitly (e.g. status)
-                    if k == "status":
-                        new_dict[k] = cleaned
-                    # else skip
-                else:
-                    # skip empty string/list/dict
-                    continue
-            else:
-                new_dict[k] = cleaned
-        return new_dict
-    if isinstance(obj, list):
-        return [_sanitize(i) for i in obj if i not in ("", [], {}, None)]
-    if obj == "":
-        return None
-    return obj
-
-
-# ---------------------------------------------------------------------------
-# High-level convenience – build a full PatientProfile by combining all prompts.
-# ---------------------------------------------------------------------------
-
-
-async def _extract_patient_profile_async(
-    text: str, model: str = "gpt-4o-mini"
-) -> Optional[PatientProfile]:
-    # Gather all three extractions concurrently.
-    basic_task = _BASIC_INFO_EXTRACTOR.extract_async(text, model=model)
-    contact_task = _CONTACT_INFO_EXTRACTOR.extract_async(text, model=model)
-    rel_task = _RELATIONSHIPS_EXTRACTOR.extract_async(text, model=model)
-
-    basic, contact, relationships = await asyncio.gather(
-        basic_task, contact_task, rel_task
-    )
-
-    # Merge sections into a single dict.
-    merged: Dict[str, Any] = {}
-    for section in (basic, contact, relationships):
-        _deep_merge(merged, section)
-
-    # Ensure mandatory fields exist so validation passes.
-    merged.setdefault("_id", "")
-    if "name" not in merged:
-        merged["name"] = {"first_name": None, "last_name": None, "full_name": None}
-
-    # Sanitize empty strings/collections before validation
-    merged = _sanitize(merged)
-
-    # Drop invalid language entries lacking a 'value'.
-    if "languages" in merged:
-        merged["languages"] = [
-            lang for lang in merged["languages"] if lang.get("value")
-        ]
-        if not merged["languages"]:
-            del merged["languages"]
-
-    # Prune telecom lists with missing 'value'.
-    for tel_key in ("phones", "emails", "faxes"):
-        if tel_key in merged:
-            merged[tel_key] = [t for t in merged[tel_key] if t.get("value")]
-            if not merged[tel_key]:
-                del merged[tel_key]
-
-    # Prune empty addresses.
-    if "addresses" in merged:
-        merged["addresses"] = [
-            a
-            for a in merged["addresses"]
-            if any(
-                a.get(k) for k in ("line", "city", "state", "postal_code", "country")
-            )
-        ]
-        if not merged["addresses"]:
-            del merged["addresses"]
-
-    # Clean contacts recursively.
-    if "contacts" in merged:
-        valid_contacts = []
-        for c in merged["contacts"]:
-            # Telecom inside contact
-            for tel_key in ("phones", "emails", "faxes"):
-                if tel_key in c:
-                    c[tel_key] = [t for t in c[tel_key] if t.get("value")]
-                    if not c[tel_key]:
-                        c.pop(tel_key, None)
-            # Addresses inside contact
-            if "addresses" in c:
-                c["addresses"] = [
-                    a
-                    for a in c["addresses"]
-                    if any(
-                        a.get(k)
-                        for k in ("line", "city", "state", "postal_code", "country")
-                    )
-                ]
-                if not c["addresses"]:
-                    c.pop("addresses", None)
-            # Ensure name field
-            if "name" not in c or not isinstance(c["name"], dict):
-                c["name"] = {"first_name": None, "last_name": None, "full_name": None}
-            valid_contacts.append(c)
-        if valid_contacts:
-            merged["contacts"] = valid_contacts
-        else:
-            del merged["contacts"]
-
-    # Guarantee the required 'name' object remains after sanitization.
-    if "name" not in merged or not isinstance(merged["name"], dict):
-        merged["name"] = {"first_name": None, "last_name": None, "full_name": None}
-    elif not merged["name"]:
-        merged["name"] = {"first_name": None, "last_name": None, "full_name": None}
-
-    if not merged:
-        return None
-
-    return PatientProfile.model_validate(merged)
+# Default singleton for convenience
+_DEFAULT_EXTRACTOR = PatientProfileExtractor()
 
 
 def extract_patient_profile(
-    text: str, model: str = "gpt-4o-mini"
-) -> Optional[PatientProfile]:
-    """Extract *all* known patient information by combining the 3 partial prompts."""
-    return asyncio.run(_extract_patient_profile_async(text, model=model))
+    text: str, model: str = "gpt-4.1-mini"
+) -> PatientProfile | None:
+    """Convenience wrapper around a module-level `PatientProfileExtractor`."""
 
+    return _DEFAULT_EXTRACTOR.extract(text, model=model)
 
-# ---------------------------------------------------------------------------
-# CLI / manual test ----------------------------------------------------------------
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     SAMPLE = (
-        "Hi, I'm John Doe (male, born 1990-05-15). Call me on +1-234-567-8901. "
-        "My wife Jane Doe (female) can be reached at 987-654-3210 if there's an emergency."
+        "Hi doctor, my name is Maria Elena García López but friends call me Mariel. "
+        "I was born on 1980-10-08 and I’m female. Current address: 24 Rue de Rivoli, Paris, France. "
+        "Mobile +33 6 12 34 56 78; work email maria.garcia@louvre.fr. "
+        "I speak Spanish (preferred), French and English."
     )
+
+    test_report = """
+    ## Medical Report: Alice Wane
+
+    **Full Name:** Alice Wane
+    **Alias:** "Ally"
+    **Birth Information:** March 1985
+    **Gender:** Female
+
+    ---
+
+    ### **Family Information:**
+
+    **Daughter:** Alicia Wane
+    *   **Birthdate:** October 12, 2010
+
+    ---
+
+    **Date of Report:** July 25, 2025
+    **Prepared By:** [Your Name/Clinic Name], MD
+
+    ---
+
+    ### **Chief Complaint:**
+
+    Ms. Alice Wane (40F) presents with 6 months of worsening chronic fatigue, intermittent musculoskeletal pain, difficulty concentrating, disturbed sleep, and occasional GI discomfort.
+
+    ### **History of Present Illness (HPI):**
+
+    Fatigue is profound, unremitting, and not relieved by rest, significantly impacting daily life and work as a software engineer. Reports migratory arthralgia/myalgia (knees, shoulders, lower back) with occasional hand swelling. Sleep is unrefreshing. GI symptoms include bloating, abdominal discomfort, and alternating constipation/diarrhea. No fever, weight changes, rashes, or recurrent infections. Concerns about ability to care for her daughter, Alicia.
+
+    ### **Past Medical History (PMH):**
+
+    Mild iron-deficiency anemia in late 20s. No major surgeries or chronic conditions. Up-to-date immunizations. Allergies to dust mites.
+
+    ### **Medications:**
+
+    Multivitamin, occasional antihistamines.
+
+    ### **Family History (FH):**
+
+    Mother: HTN. Father: Deceased (72, MI), DM2. Paternal grandmother: RA.
+
+    ### **Social History (SH):**
+
+    Single mother, software engineer. Denies tobacco, illicit drugs. Occasional alcohol. Sporadic exercise. High work stress balancing career and parenting.
+
+    ### **Review of Systems (ROS) - Key Findings:**
+
+    *   **General:** Significant fatigue, malaise.
+    *   **Musculoskeletal:** Diffuse myalgia, arthralgia, occasional joint swelling.
+    *   **Neurological:** Difficulty concentrating, "brain fog."
+    *   **Psychiatric:** Increased irritability, low mood, concern for childcare.
+    *   **Gastrointestinal:** As per HPI.
+
+    ### **Physical Examination (PE) - Key Findings:**
+
+    *   **Vital Signs:** Stable (Temp \(36.8^\circ C\), BP \(118/76 \text{ mmHg}\), HR \(72 \text{ bpm}\), RR \(16 \text{ breaths/min}\), SpO2 \(99\%\)).
+    *   **General:** Appears fatigued.
+    *   **Musculoskeletal:** Mild tenderness bilateral knees/shoulders. Full range of motion. No significant effusions.
+
+    ### **Provisional Diagnoses:**
+
+    1.  Chronic Fatigue Syndrome (CFS)/Myalgic Encephalomyelitis (ME)
+    2.  Fibromyalgia
+    3.  Irritable Bowol Syndrome (IBS)
+    4.  Vitamin D Deficiency
+    5.  Rule out Hypothyroidism
+    6.  Rule out Anemia
+
+    ### **Investigations (Planned):**
+
+    *   **Blood Tests:** CBC, ESR, CRP, TFTs, Vit B12, Folate, Fasting Glucose, KFTs, LFTs, Electrolytes, Ferritin, Vit D, ANA, RF, CCP, CK.
+    *   Urine Analysis.
+    *   Consider Stool Studies.
+    *   **Referrals:** Rheumatology, Gastroenterology, Sleep Specialist, Pain Management, CBT/GET (caution).
+
+    ### **Management Plan:**
+
+    1.  **Symptomatic:** Pacing for fatigue, NSAIDs for pain, sleep hygiene education, dietary modifications for GI.
+    2.  **Nutritional:** Optimize diet, address deficiencies (Vit D, iron).
+    3.  **Stress Management:** Mindfulness, meditation, therapist referral.
+    4.  **Exercise:** Gentle, gradual, avoid post-exertional malaise.
+    5.  **Patient Education:** CFS/ME, self-management, multidisciplinary approach.
+    6.  **Follow-up:** 2-4 weeks to review results.
+
+    ### **Communication and Follow-up Challenges:**
+
+    Initial attempts to contact Ms. Wane directly for follow-up were unsuccessful (unanswered calls, no email response), raising concerns about adherence and care continuity.
+
+    ### **Resolution of Communication Issue:**
+
+    Clinic successfully contacted her daughter, Alicia Wane (born Oct 12, 2010), via phone numbers accquired from her workplace:
+    *   **Primary:** (555) 123-4567
+    *   **Secondary:** (555) 987-6543
+    *   **Land number:** (555) 234-7890
+
+    Alicia confirmed Ms. Wane was overwhelmed and facilitated scheduling the next appointment.
+    ### **Prognosis:**
+
+    Varied for CFS/Fibromyalgia. No definitive cure, but effective management, lifestyle changes, and multidisciplinary support (now enhanced by daughter's involvement) can improve quality of life. Ongoing monitoring is crucial.
+
+    ---
+    **End of Report**
+    """
 
     test_report_2 = """
     Back See All Profiles
@@ -535,7 +331,6 @@ if __name__ == "__main__":
     Please see full Prescribing Information, including Boxed WARNING.
     """
 
-
     test_text_3 = """
     User: hi, i want to visit the clinic. when can i go?
 
@@ -558,5 +353,29 @@ if __name__ == "__main__":
     Medical AI: Thank you. I have noted to send a reminder to that number for Alex's appointment next week. Is there anything else I can assist you with today?
     """
 
+    profile = extract_patient_profile(SAMPLE)
+    if profile is not None:
+        print(profile)
+    else:
+        print("No demographic facts found")
+    print("--------------------------------\n")
+
+    profile = extract_patient_profile(test_report)
+    if profile is not None:
+        print(profile)
+    else:
+        print("No demographic facts found")
+    print("--------------------------------\n")
+
     profile = extract_patient_profile(test_report_2)
-    print("Merged profile:", profile.model_dump(exclude_none=True) if profile else None)
+    if profile is not None:
+        print(profile)
+    else:
+        print("No demographic facts found")
+    print("--------------------------------\n")
+
+    profile = extract_patient_profile(test_text_3)
+    if profile is not None:
+        print(profile)
+    else:
+        print("No demographic facts found")
