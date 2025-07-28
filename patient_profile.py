@@ -26,8 +26,8 @@ class Deceased(BaseModel):
 
 
 class HumanName(BaseModel):
-    first_name: str
-    last_name: str
+    first_name: Optional[str] = None
+    last_name: Optional[str] = None
     full_name: Optional[str] = None
 
     def to_fhir_dict(self) -> Dict[str, Any]:
@@ -45,17 +45,17 @@ class HumanName(BaseModel):
 
 class Phone(BaseModel):
     value: str
-    use_for: Optional[Literal["home", "work", "mobile"]] = None
+    use_for: Optional[Literal["home", "work", "mobile", "other"]] = None
 
 
 class Email(BaseModel):
     value: str
-    use_for: Optional[Literal["home", "work"]] = None
+    use_for: Optional[Literal["home", "work", "other"]] = None
 
 
 class Fax(BaseModel):
     value: str
-    use_for: Optional[Literal["home", "work"]] = None
+    use_for: Optional[Literal["home", "work", "other"]] = None
 
 
 class Address(BaseModel):
