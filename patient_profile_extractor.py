@@ -4,7 +4,7 @@ import time
 import asyncio
 import json
 import time
-import re  # added
+import re
 from typing import Any, Dict, List, MutableMapping, Optional
 
 from openai import AsyncOpenAI
@@ -16,12 +16,10 @@ from patient_profile import PatientProfile
 # ---------------------------------------------------------------------------
 
 BASIC_INFO_SYSTEM_PROMPT = """
-You are an AI specialized in extracting basic demographic information about a patient from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description or just a text. 
-Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
+You are an AI specialized in extracting demographic information specifically about the patient from input text, such as conversations, profiles, or other text data. The text may mention multiple individuals, but you must focus only on the patient's information. Your task is to analyze the text and populate the following JSON schema with the patient's extracted information:
 
 ```json
 {
-  "_id": "",
   "name": {
     "first_name": "",
     "last_name": "",
@@ -48,24 +46,29 @@ Your task is to analyze the text and extract information to populate the followi
     "date": ""
   }
 }
+```
 
 Instructions:
 
-1. Extract the patient's primary name, populating first_name, last_name, and full_name (if provided directly or constructed as "first_name last_name"). If only a full name is given, infer first_name and last_name where possible or leave them empty.
-2. Extract any additional names (aliases or other names) and populate other_names with the same structure.
-3. Extract gender, which must be one of: "male", "female", "other", "unknown". Use "unknown" if not specified.
-4. Extract birth date in ISO 8601 format (YYYY-MM-DD). If age is provided, estimate birth year (assume current year is 2025) and use January 1 (YYYY-01-01) if exact date is unavailable.
-5. Extract marital status, which must be one of: "single", "married", "divorced", "widowed", "separated", "unknown". Use "unknown" if not specified.
-6. Extract languages spoken, populating value (e.g., "English", "Spanish") and preferred (true if explicitly stated as preferred, else false).
-7. Determine if the patient is deceased and extract the date of death (YYYY-MM-DD) if provided. Set status to false if not mentioned.
-8. If _id is not mentioned, leave it empty (to be assigned later).
-9. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-10. Return the result as a JSON object.
+### Field Extraction Rules
+1. **Name**: Extract the exactly patient's primary name. Populate `first_name`, `last_name`, and `full_name`.
+2. **Other Names**: Extract any aliases or additional names for the patient, populating `other_names` with the same structure as `name`.
+3. **Gender**: Extract the patient's gender, using "male", "female", "other", or "unknown". Default to "unknown" if not specified.
+4. **Birth Date**: Extract the patient's birth date, aiming for ISO 8601 format (YYYY-MM-DD). If only partial information is provided (e.g., year or year and month), populate with as much detail as available (e.g., "YYYY" or "YYYY-MM"). If only age is provided, estimate birth year (current year is 2025) and use "YYYY-01-01". Leave empty if no birth date or age is determinable.
+5. **Marital Status**: Extract the patient's marital status, using "single", "married", "divorced", "widowed", "separated", or "unknown". Default to "unknown" if not specified.
+6. **Languages**: Extract the patient's spoken languages, populating `value` (e.g., "English", "Spanish") and `preferred` (true only if explicitly stated as preferred, else false).
+7. **Deceased**: Determine if the patient is deceased. Set `status` to true and extract `date` (YYYY-MM-DD) if provided; otherwise, set `status` to false and leave `date` empty.
+
+### Key Considerations
+1. **Patient Focus**: Extract information only about the patient, ignoring details about other individuals (e.g., family members, doctors) unless clearly tied to the patient.
+2. **Missing Information**: For missing or unclear information, use empty strings, null, or empty arrays/objects as per the schema.
+3. **Output Format**: Return the result as a JSON object adhering to the provided schema.
 """
 
 CONTACT_INFO_SYSTEM_PROMPT = """
-You are an AI specialized in extracting contact information about a patient from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description. Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
+You are an AI specialized in extracting contact information specifically about the patient from input text, such as conversations, profiles, or other text data. The text may mention multiple individuals, but you must focus only on the patient's contact information. Your task is to analyze the text and populate the following JSON schema with the patient's extracted information:
 
+```json
 {
   "phones": [
     {
@@ -95,21 +98,27 @@ You are an AI specialized in extracting contact information about a patient from
     }
   ]
 }
+```
 
 Instructions:
 
-1. Extract phone numbers and classify their use_for as one of: "home", "work", "mobile", "other". Assume "mobile" if not specified.
-2. Extract email addresses and classify their use_for as one of: "home", "work", "other". Assume "other" if not specified.
-3. Extract fax numbers and classify their use_for as one of: "home", "work", "other". Assume "other" if not specified.
-4. Extract addresses, populating line (street address as a list of strings), city, state, postal_code, and country. Combine multiple street lines into line if necessary.
-5. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-6. Return the result as a JSON object.
+### Field Extraction Rules
+1. **Phones**: Extract the patient's phone numbers. Populate `value` with the phone number and `use_for` as one of: "home", "work", "mobile", or "other". Default to "mobile" if the type is not specified.
+2. **Emails**: Extract the patient's email addresses. Populate `value` with the email address and `use_for` as one of: "home", "work", or "other". Default to "other" if the type is not specified.
+3. **Faxes**: Extract the patient's fax numbers. Populate `value` with the fax number and `use_for` as one of: "home", "work", or "other". Default to "other" if the type is not specified.
+4. **Addresses**: Extract the patient's addresses. Populate `line` (street address as a list of strings, combining multiple lines if necessary), `city`, `state`, `postal_code`, and `country`. Leave fields empty if specific components are not provided.
+
+### Key Considerations
+1. **Patient Focus**: Extract contact information only about the patient, ignoring details about other individuals (e.g., family members, doctors) unless clearly tied to the patient.
+2. **Missing Information**: For missing or unclear information, use empty strings, null, or empty arrays/objects as per the schema.
+3. **Output Format**: Return the result as a JSON object adhering to the provided schema.
 """
 
 
 RELATIONSHIPS_SYSTEM_PROMPT = """
-You are an AI specialized in extracting information about a patient’s contacts (e.g., family members or emergency contacts) from input text. The text may be a conversation between the patient and an AI assistant or a patient profile description. Your task is to analyze the text and extract information to populate the following JSON structure, adhering to the defined schema:
+You are an AI specialized in extracting information about a patient’s contacts (e.g., family members, emergency contacts) from input text, such as conversations, profiles, or other text data. The text may mention multiple individuals, but you must focus only on the patient’s contacts, excluding the patient or unrelated individuals. Your task is to analyze the text and populate the following JSON schema with the extracted information for the patient’s contacts:
 
+```json
 {
   "contacts": [
     {
@@ -156,17 +165,24 @@ You are an AI specialized in extracting information about a patient’s contacts
     }
   ]
 }
+```
 
 Instructions:
 
-1. Identify individuals mentioned as contacts (e.g., family members, emergency contacts) and extract their names, populating first_name, last_name, and full_name (if provided or constructed).
-2. Extract relationships (e.g., "wife", "husband", "child") as a list in relationship.
-3. Extract phone numbers, emails, and faxes for each contact, classifying their use_for as one of: "home", "work", "mobile", "other" for phones/faxes, and "home", "work", "other" for emails. Assume defaults ("mobile" for phones, "other" for faxes/emails) if not specified.
-4. Extract addresses for each contact, populating line, city, state, postal_code, and country.
-5. Extract contact gender, which must be one of: "male", "female", "other", "unknown". Use "unknown" if not specified.
-6. Extract any organizations associated with the contact (e.g., workplace or hospital), populating reference and display.
-7. If any information is missing or unclear, leave the field empty, null, or as an empty array/object, respecting the schema.
-8. Return the result as a JSON object.
+### Field Extraction Rules
+1. **Relationship**: Extract the relationship(s) of each contact to the patient (e.g., "wife", "husband", "child") and populate `relationship` as a list of strings.
+2. **Name**: Extract exactly each contact’s name. Populate `first_name`, `last_name`, and `full_name`.
+3. **Phones**: Extract each contact’s phone numbers. Populate `value` with the phone number and `use_for` as one of: "home", "work", "mobile", or "other". Default to "mobile" if the type is not specified.
+4. **Emails**: Extract each contact’s email addresses. Populate `value` with the email address and `use_for` as one of: "home", "work", or "other". Default to "other" if the type is not specified.
+5. **Faxes**: Extract each contact’s fax numbers. Populate `value` with the fax number and `use_for` as one of: "home", "work", or "other". Default to "other" if the type is not specified.
+6. **Addresses**: Extract each contact’s addresses. Populate `line` (street address as a list of strings, combining multiple lines if necessary), `city`, `state`, `postal_code`, and `country`. Leave fields empty if specific components are not provided.
+7. **Gender**: Extract each contact’s gender, using "male", "female", "other", or "unknown". Default to "unknown" if not specified.
+8. **Organizations**: Extract any organizations associated with each contact (e.g., workplace, hospital). Populate `reference` (e.g., an identifier or URL) and `display` (e.g., organization name) for each organization.
+
+### Key Considerations
+1. **Contact Focus**: Extract information only about the patient’s contacts (e.g., family members, emergency contacts)
+2. **Missing Information**: For missing or unclear information, use empty strings, null, or empty arrays/objects as per the schema.
+3. **Output Format**: Return the result as a JSON object adhering to the provided schema.
 """
 
 # ---------------------------------------------------------------------------
@@ -534,7 +550,6 @@ if __name__ == "__main__":
 
     Please see full Prescribing Information, including Boxed WARNING.
     """
-
 
     test_text_3 = """
     User: hi, i want to visit the clinic. when can i go?

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-from datetime import date
 from typing import List, Optional, Dict, Any, Literal, TypeAlias
 
 
@@ -22,7 +21,7 @@ class Deceased(BaseModel):
     """Represents patient death information."""
 
     status: bool = False
-    date: Optional[date] = None
+    date: Optional[str] = None
 
 
 class HumanName(BaseModel):
@@ -95,7 +94,7 @@ class PatientProfile(BaseModel):
     emails: List[Email] = Field(default_factory=list)
     faxes: List[Fax] = Field(default_factory=list)
     gender: Optional[Gender] = None
-    birth_date: Optional[date] = None
+    birth_date: Optional[str] = None
     addresses: List[Address] = Field(default_factory=list)
     deceased: Deceased = Field(default_factory=Deceased)
     marital_status: Optional[MaritalStatus] = None
@@ -133,7 +132,7 @@ class PatientProfile(BaseModel):
         if self.gender:
             payload["gender"] = self.gender
         if self.birth_date:
-            payload["birthDate"] = self.birth_date.isoformat()
+            payload["birthDate"] = self.birth_date
         if self.marital_status:
             payload["maritalStatus"] = {
                 "coding": [{"code": self.marital_status}],
@@ -191,7 +190,7 @@ class PatientProfile(BaseModel):
         if self.deceased.status:
             payload["deceasedBoolean"] = True
         if self.deceased.date is not None:
-            payload["deceasedDate"] = self.deceased.date.isoformat()
+            payload["deceasedDate"] = self.deceased.date
 
         # Resource type
         payload["resourceType"] = "Patient"
@@ -242,7 +241,7 @@ class PatientProfile(BaseModel):
         # Gender, birth, marital
         data["gender"] = payload.get("gender")
         if "birthDate" in payload:
-            data["birth_date"] = date.fromisoformat(payload["birthDate"])
+            data["birth_date"] = payload["birthDate"]
         if ms := payload.get("maritalStatus"):
             data["marital_status"] = ms.get("coding", [{}])[0].get("code") or ms.get(
                 "text"
@@ -267,7 +266,7 @@ class PatientProfile(BaseModel):
         dec_date = payload.get("deceasedDate")
         deceased_obj = Deceased(
             status=bool(dec_bool),
-            date=date.fromisoformat(dec_date) if dec_date else None,
+            date=dec_date,
         )
         data["deceased"] = deceased_obj
 
@@ -321,7 +320,7 @@ def main() -> None:
         phones=[Phone(value="+33 6 12 34 56 78", use_for="mobile")],
         emails=[Email(value="maria.garcia@louvre.fr", use_for="work")],
         gender="male",
-        birth_date=date(1985, 4, 20),
+        birth_date="1985-04-20",
         addresses=[
             Address(line=["1 Main St"], city="Metropolis", state="NY", country="USA")
         ],
